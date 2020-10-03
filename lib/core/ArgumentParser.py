@@ -33,7 +33,7 @@ class ArgumentParser(object):
 
         self.clean_view = options.clean_view
         self.full_url = options.full_url
-        
+
         if not options.url:
 
             if options.urlList:
@@ -59,7 +59,7 @@ class ArgumentParser(object):
                 exit(0)
 
         else:
-            self.urlList = [options.url]
+            self.urlList = options.url.split()
 
 
         if not options.extensions and not options.defaultExtensions:
@@ -145,13 +145,13 @@ class ArgumentParser(object):
                 self.includeStatusCodes = list(
                     oset([int(includeStatusCode.strip()) if includeStatusCode else None for includeStatusCode in
                           options.includeStatusCodes.split(',')]))
-                
+
             except ValueError:
                 self.includeStatusCodes = []
 
         else:
             self.includeStatusCodes = []
-            
+
         if options.excludeExtensions:
 
             try:
@@ -163,7 +163,7 @@ class ArgumentParser(object):
                         ]
                     )
                 )
-                
+
             except ValueError:
                 self.excludeExtensions = []
 
@@ -185,7 +185,7 @@ class ArgumentParser(object):
                         ]
                     )
                 )
-                
+
             except ValueError:
                 self.excludeStatusCodes = []
 
@@ -267,7 +267,7 @@ class ArgumentParser(object):
 
         else:
             self.scanSubdirs = None
-            
+
 
         if not self.recursive and options.excludeSubdirs:
             self.excludeSubdirs = None
@@ -288,12 +288,12 @@ class ArgumentParser(object):
 
         else:
             self.excludeSubdirs = None
-            
-        
+
+
         if len(set(self.extensions).intersection(self.excludeExtensions)):
             print("Exclude extensions can not contain any extension that has already in the extensions")
             exit(0)
-            
+
 
         self.redirect = options.noFollowRedirects
         self.requestByHostname = options.requestByHostname
@@ -364,7 +364,7 @@ class ArgumentParser(object):
     def parseArguments(self):
         usage = "Usage: %prog [-u|--url] target [-e|--extensions] extensions [options]"
         parser = OptionParser(usage, epilog='''
-You can change the dirsearch default configurations (default extensions, timeout, wordlist location, ...) by editing the "default.conf" file. More information at https://github.com/maurosoria/dirsearch.                          
+You can change the dirsearch default configurations (default extensions, timeout, wordlist location, ...) by editing the "default.conf" file. More information at https://github.com/maurosoria/dirsearch.
 ''')
 
         # Mandatory arguments
