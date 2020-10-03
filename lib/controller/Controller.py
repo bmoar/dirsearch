@@ -37,8 +37,8 @@ class SkipTargetInterrupt(Exception):
 
 
 MAYOR_VERSION = 0
-MINOR_VERSION = 3
-REVISION = 9
+MINOR_VERSION = 4
+REVISION = 0
 VERSION = {
     "MAYOR_VERSION": MAYOR_VERSION,
     "MINOR_VERSION": MINOR_VERSION,
@@ -64,8 +64,8 @@ class Controller(object):
 
         self.recursive_level_max = self.arguments.recursive_level_max
 
-        if self.arguments.httpmethod.lower() not in ["get", "head", "post", "put", "options", "delete", "trace"]:
-            self.output.error("Invalid http method!")
+        if self.arguments.httpmethod.lower() not in ["get", "head", "post", "put", "patch", "options", "delete", "trace", "debug"]:
+            self.output.error("Invalid HTTP method!")
             exit(1)
 
         self.httpmethod = self.arguments.httpmethod.lower()
@@ -101,7 +101,6 @@ class Controller(object):
             self.savePath = savePath
 
         self.reportsPath = FileUtils.buildPath(self.savePath, "logs")
-        self.quietMode = self.arguments.quietMode
         self.blacklists = self.getBlacklists()
         self.fuzzer = None
         self.includeStatusCodes = self.arguments.includeStatusCodes
@@ -114,22 +113,25 @@ class Controller(object):
         self.maximumResponseSize = self.arguments.maximumResponseSize
         self.directories = Queue()
         self.excludeSubdirs = (
-            arguments.excludeSubdirs if arguments.excludeSubdirs is not None else []
+            arguments.excludeSubdirs if arguments.excludeSubdirs else []
         )
         self.output.header(program_banner)
 
         self.dictionary = Dictionary(self.arguments.wordlist, self.arguments.extensions, self.arguments.suffixes,
-                                     self.arguments.lowercase, self.arguments.uppercase, self.arguments.forceExtensions,
-                                     self.arguments.noDotExtensions)
+                                     self.arguments.prefixes, self.arguments.lowercase, self.arguments.uppercase,
+                                     self.arguments.capitalization, self.arguments.forceExtensions,
+                                     self.arguments.noDotExtensions, self.arguments.excludeExtensions)
 
         self.printConfig()
         self.errorLog = None
         self.errorLogPath = None
-        self.errorLogLock = Lock()
+        self.threadsLock = Lock()
         self.batch = False
         self.batchSession = None
         self.setupErrorLogs()
         self.output.errorLogFile(self.errorLogPath)
+        self.currentJob = 0
+        self.allJobs = 0
 
         if self.arguments.autoSave and len(self.arguments.urlList) > 1:
             self.setupBatchReports()
@@ -141,12 +143,12 @@ class Controller(object):
             )
 
         try:
-            for url in self.arguments.urlList:
+            for url in list(dict.fromkeys(self.arguments.urlList)):
                 try:
                     gc.collect()
                     self.reportManager = ReportManager()
                     self.currentUrl = url
-                    self.output.target(self.currentUrl)
+                    self.output.setTarget(self.currentUrl)
 
                     try:
                         self.requester = Requester(
@@ -180,12 +182,14 @@ class Controller(object):
                     # Initialize directories Queue with start Path
                     self.basePath = self.requester.basePath
 
-                    if self.arguments.scanSubdirs is not None:
+                    if self.arguments.scanSubdirs:
                         for subdir in self.arguments.scanSubdirs:
                             self.directories.put(subdir)
+                            self.allJobs += 1
 
                     else:
                         self.directories.put("")
+                        self.allJobs += 1
 
                     self.setupReports(self.requester)
 
@@ -229,6 +233,7 @@ class Controller(object):
 
         self.output.config(
             ', '.join(self.arguments.extensions),
+            ', '.join(self.arguments.prefixes),
             ', '.join(self.arguments.suffixes),
             str(self.arguments.threadsCount),
             str(len(self.dictionary)),
@@ -267,6 +272,10 @@ class Controller(object):
             blacklists[status] = []
 
             for line in FileUtils.getLines(blacklistFileName):
+                # The same with Dictionary.py
+                if line.startswith("/"):
+                    line = line[1:]
+
                 # Skip comments
                 if line.lstrip().startswith("#"):
                     continue
@@ -275,11 +284,14 @@ class Controller(object):
                 if "%ext%" in line.lower():
                     for extension in self.arguments.extensions:
                         if self.arguments.noDotExtensions:
-                            line = reextdot.sub(extension, line)
+                            entry = reextdot.sub(extension, line)
+                            
+                        else:
+                            entry = line
 
-                        line = reext.sub(extension, line)
+                        entry = reext.sub(extension, entry)
                         
-                        blacklists[status].append(line)
+                        blacklists[status].append(entry)
                         
                 # Forced extensions is not used here because -r is only used for wordlist (in documentation),
                 # applying in blacklist may create false negatives
@@ -326,8 +338,8 @@ class Controller(object):
     def setupReports(self, requester):
         if self.arguments.autoSave:
 
-            basePath = "/" if requester.basePath == "" else requester.basePath
-            basePath = basePath.replace(os.path.sep, ".")[1:-1]
+            basePath = "/" if not(len(requester.basePath)) else requester.basePath
+            basePath = basePath.replace(os.path.sep, ".")[:-1]
             fileName = None
             directoryPath = None
 
@@ -337,8 +349,8 @@ class Controller(object):
 
             else:
 
-                fileName = ('{}_'.format(basePath) if basePath != '' else '')
-                fileName += time.strftime('%y-%m-%d_%H-%M-%S')
+                fileName = ('{}_'.format(basePath))
+                fileName += time.strftime('%y-%m-%d_%H-%M-%S.txt')
                 directoryPath = FileUtils.buildPath(self.savePath, 'reports', requester.host)
 
 
@@ -349,8 +361,7 @@ class Controller(object):
             if FileUtils.exists(outputFile):
                 i = 2
 
-                while FileUtils.exists(outputFile + "_" + str(i)):
-                    i += 1
+                while FileUtils.exists(outputFile + "_" + str(i)): i += 1
 
                 outputFile += "_" + str(i)
 
@@ -400,15 +411,15 @@ class Controller(object):
                 sys.exit(1)
         
         # TODO: format, refactor code 
-        if self.arguments.simpleOutputFile is not None:
+        if self.arguments.simpleOutputFile:
             self.reportManager.addOutput(SimpleReport(requester.host, requester.port, requester.protocol,
                                                       requester.basePath, self.arguments.simpleOutputFile, self.batch))
 
-        if self.arguments.plainTextOutputFile is not None:
+        if self.arguments.plainTextOutputFile:
             self.reportManager.addOutput(PlainTextReport(requester.host, requester.port, requester.protocol,
                                                          requester.basePath, self.arguments.plainTextOutputFile, self.batch))
 
-        if self.arguments.jsonOutputFile is not None:
+        if self.arguments.jsonOutputFile:
             self.reportManager.addOutput(JSONReport(requester.host, requester.port, requester.protocol,
                                                     requester.basePath, self.arguments.jsonOutputFile, self.batch))
 
@@ -417,13 +428,13 @@ class Controller(object):
     def matchCallback(self, path):
         self.index += 1
 
-        if path.status is not None:
+        if path.status:
 
             if path.status not in self.excludeStatusCodes and (
                     not self.includeStatusCodes or path.status in self.includeStatusCodes) and (
-                    self.blacklists.get(path.status) is None or path.path not in self.blacklists.get(
+                    not(self.blacklists.get(path.status)) or path.path not in self.blacklists.get(
                 path.status)) and not (
-                    self.suppressEmpty and (len(path.response.body) == 0)) and not ((
+                    self.suppressEmpty and (not(len(path.response.body)))) and not ((
                     self.minimumResponseSize and self.minimumResponseSize > len(path.response.body)) or (
                     self.maximumResponseSize and self.maximumResponseSize < len(path.response.body))):
 
@@ -442,20 +453,24 @@ class Controller(object):
                         del path
                         return
 
-                self.output.statusReport(path.path, path.response)
 
                 pathIsInScanSubdirs = False
+                addedToQueue = False
 
-                if self.arguments.scanSubdirs is not None:
+                if self.arguments.scanSubdirs:
                     for subdir in self.arguments.scanSubdirs:
                         if subdir == path.path + "/":
                             pathIsInScanSubdirs = True
 
-                if pathIsInScanSubdirs == False:
-                    if path.response.redirect:
-                        self.addRedirectDirectory(path)
+                if not pathIsInScanSubdirs:
+                    if not self.recursive:
+                        pass
+                    elif path.response.redirect:
+                        addedToQueue = self.addRedirectDirectory(path)
                     else:
-                        self.addDirectory(path.path)
+                        addedToQueue = self.addDirectory(path.path)
+                        
+                self.output.statusReport(path.path, path.response, self.arguments.full_url, addedToQueue)
 
                 newPath = "{}{}".format(self.currentDirectory, path.path)
 
@@ -467,7 +482,7 @@ class Controller(object):
 
     def notFoundCallback(self, path):
         self.index += 1
-        self.output.lastPath(path, self.index, len(self.dictionary))
+        self.output.lastPath(path, self.index, len(self.dictionary), self.currentJob, self.allJobs)
         del path
 
     def errorCallback(self, path, errorMsg):
@@ -475,7 +490,7 @@ class Controller(object):
         del path
 
     def appendErrorLog(self, path, errorMsg):
-        with self.errorLogLock:
+        with self.threadsLock:
             line = time.strftime("[%y-%m-%d %H:%M:%S] - ")
             line += self.currentUrl + " - " + path + " - " + errorMsg
             self.errorLog.write(os.linesep + line)
@@ -534,6 +549,8 @@ class Controller(object):
 
     def wait(self):
         while not self.directories.empty():
+            self.currentJob += 1
+            gc.collect()
             self.index = 0
             self.currentDirectory = self.directories.get()
             self.output.warning(
@@ -549,9 +566,6 @@ class Controller(object):
         return
 
     def addDirectory(self, path):
-        if not self.recursive:
-            return False
-
         if path.endswith("/"):
             if path in [directory + "/" for directory in self.excludeSubdirs]:
                 return False
@@ -565,6 +579,7 @@ class Controller(object):
                 return False
 
             self.directories.put(dir)
+            self.allJobs += 1
 
             self.doneDirs.append(dir)
 
@@ -574,10 +589,8 @@ class Controller(object):
             return False
 
     def addRedirectDirectory(self, path):
-        """Resolve the redirect header relative to the current URL and add the
-        path to self.directories if it is a subdirectory of the current URL."""
-        if not self.recursive:
-            return False
+        # Resolve the redirect header relative to the current URL and add the
+        # path to self.directories if it is a subdirectory of the current URL
 
         baseUrl = self.currentUrl.rstrip("/") + "/" + self.currentDirectory
 
@@ -590,7 +603,7 @@ class Controller(object):
             and absoluteUrl != baseUrl
             and absoluteUrl.endswith("/")
         ):
-            dir = absoluteUrl[len(baseUrl) :]
+            dir = absoluteUrl[len(self.currentUrl.rstrip("/")) + 1 :]
 
             if dir in self.doneDirs:
                 return False
@@ -599,6 +612,7 @@ class Controller(object):
                 return False
 
             self.directories.put(dir)
+            self.allJobs += 1
 
             self.doneDirs.append(dir)
 

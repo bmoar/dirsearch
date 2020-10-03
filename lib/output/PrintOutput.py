@@ -16,7 +16,6 @@
 #
 #  Author: Mauro Soria
 
-import platform
 import sys
 import threading
 import time
@@ -24,10 +23,9 @@ import time
 from posixpath import join as urljoin
 
 from lib.utils.FileUtils import *
-from lib.utils.TerminalSize import get_terminal_size
 from thirdparty.colorama import *
 
-if platform.system() == "Windows":
+if sys.platform in ["win32", "msys"]:
     from thirdparty.colorama.win32 import *
 
 
@@ -44,17 +42,31 @@ class PrintOutput(object):
         pass
 
     def inLine(self, string):
-        pass
+        self.erase()
+        sys.stdout.write(string)
+        sys.stdout.flush()
 
     def erase(self):
-        pass
+        if sys.platform in ["win32", "cygwin", "msys"]:
+            csbi = GetConsoleScreenBufferInfo()
+            line = "\b" * int(csbi.dwCursorPosition.X)
+            sys.stdout.write(line)
+            width = csbi.dwCursorPosition.X
+            csbi.dwCursorPosition.X = 0
+            FillConsoleOutputCharacter(STDOUT, " ", width, csbi.dwCursorPosition)
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+        else:
+            sys.stdout.write("\033[1K")
+            sys.stdout.write("\033[0G")
 
     def newLine(self, string):
         sys.stdout.write(string + "\n")
         sys.stdout.flush()
         
 
-    def statusReport(self, path, response):
+    def statusReport(self, path, response, full_url, addedToQueue):
         with self.mutex:
             contentLength = None
             status = response.status
@@ -79,13 +91,16 @@ class PrintOutput(object):
             else:
                 showPath = urljoin("/", self.basePath)
                 showPath = urljoin(showPath, path)
-                showPath = self.target + showPath
+                showPath = (self.target[:-1] if self.target.endswith("/") else self.target) + showPath
             message = "{0} - {1} - {2}".format(
                 status, contentLength.rjust(6, " "), showPath
             )
 
             if status == 200:
                 message = Fore.GREEN + message + Style.RESET_ALL
+
+            elif status == 400:
+                message = Fore.MAGENTA + message + Style.RESET_ALL
 
             elif status == 401:
                 message = Fore.YELLOW + message + Style.RESET_ALL
@@ -102,10 +117,13 @@ class PrintOutput(object):
             ]:
                 message = Fore.CYAN + message + Style.RESET_ALL
                 message += "  ->  {0}".format(response.headers["location"])
+                
+            if addedToQueue:
+                message += "     (Added to queue)"
 
             self.newLine(message)
 
-    def lastPath(self, path, index, length):
+    def lastPath(self, path, index, length, currentJob, allJobs):
         pass
 
     def addConnectionError(self):
@@ -124,6 +142,7 @@ class PrintOutput(object):
     def config(
         self,
         extensions,
+        prefixes,
         suffixes,
         threads,
         wordlist_size,
@@ -134,7 +153,7 @@ class PrintOutput(object):
         pass
 
 
-    def target(self, target):
+    def setTarget(self, target):
         self.target = target
 
     def outputFile(self, target):

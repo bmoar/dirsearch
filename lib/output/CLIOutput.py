@@ -16,7 +16,6 @@
 #
 #  Author: Mauro Soria
 
-import platform
 import sys
 import threading
 import time
@@ -27,7 +26,7 @@ from lib.utils.FileUtils import *
 from lib.utils.TerminalSize import get_terminal_size
 from thirdparty.colorama import *
 
-if platform.system() == "Windows":
+if sys.platform in ["win32", "msys"]:
     from thirdparty.colorama.win32 import *
 
 
@@ -50,7 +49,7 @@ class CLIOutput(object):
         self.lastInLine = True
 
     def erase(self):
-        if platform.system() == "Windows":
+        if sys.platform in ["win32", "msys"]:
             csbi = GetConsoleScreenBufferInfo()
             line = "\b" * int(csbi.dwCursorPosition.X)
             sys.stdout.write(line)
@@ -68,7 +67,7 @@ class CLIOutput(object):
         if self.lastInLine == True:
             self.erase()
 
-        if platform.system() == "Windows":
+        if sys.platform in ["win32", "msys"]:
             sys.stdout.write(string)
             sys.stdout.flush()
             sys.stdout.write("\n")
@@ -81,7 +80,7 @@ class CLIOutput(object):
         self.lastInLine = False
         sys.stdout.flush()
 
-    def statusReport(self, path, response):
+    def statusReport(self, path, response, full_url, addedToQueue):
         with self.mutex:
             contentLength = None
             status = response.status
@@ -106,12 +105,21 @@ class CLIOutput(object):
             else:
                 showPath = urljoin("/", self.basePath)
                 showPath = urljoin(showPath, path)
+                if full_url:
+                    showPath = (self.target[:-1] if self.target.endswith("/") else self.target) + showPath
+                
             message = "[{0}] {1} - {2} - {3}".format(
-                time.strftime("%H:%M:%S"), status, contentLength.rjust(6, " "), showPath
+                time.strftime("%H:%M:%S"), 
+                status, 
+                contentLength.rjust(6, " "), 
+                showPath,
             )
 
             if status == 200:
                 message = Fore.GREEN + message + Style.RESET_ALL
+                
+            elif status == 400:
+                message = Fore.MAGENTA + message + Style.RESET_ALL
 
             elif status == 401:
                 message = Fore.YELLOW + message + Style.RESET_ALL
@@ -128,27 +136,31 @@ class CLIOutput(object):
             ]:
                 message = Fore.CYAN + message + Style.RESET_ALL
                 message += "  ->  {0}".format(response.headers["location"])
+                
+            if addedToQueue:
+                message += "     (Added to queue)"
 
             self.newLine(message)
 
-    def lastPath(self, path, index, length):
+    def lastPath(self, path, index, length, currentJob, allJobs):
         with self.mutex:
             percentage = lambda x, y: float(x) / float(y) * 100
 
             x, y = get_terminal_size()
 
             message = "{0:.2f}% - ".format(percentage(index, length))
+            
+
+            if allJobs > 1:
+                message += "Job: {0}/{1} - ".format(currentJob, allJobs)
 
             if self.errors > 0:
-                message += Style.BRIGHT + Fore.RED
-                message += "Errors: {0}".format(self.errors)
-                message += Style.RESET_ALL
-                message += " - "
+                message += "Errors: {0} - ".format(self.errors)
 
             message += "Last request to: {0}".format(path)
 
-            if len(message) > x:
-                message = message[:x]
+            if len(message) >= x:
+                message = message[:x-1]
 
             self.inLine(message)
 
@@ -158,18 +170,16 @@ class CLIOutput(object):
     def error(self, reason):
         with self.mutex:
             stripped = reason.strip()
-            start = reason.find(stripped[0])
-            end = reason.find(stripped[-1]) + 1
-            message = reason[0:start]
+            message = "\n" if "\n" in reason else ""
             message += Style.BRIGHT + Fore.WHITE + Back.RED
-            message += reason[start:end]
+            message += stripped
             message += Style.RESET_ALL
-            message += reason[end:]
             self.newLine(message)
 
     def warning(self, reason):
-        message = Style.BRIGHT + Fore.YELLOW + reason + Style.RESET_ALL
-        self.newLine(message)
+        with self.mutex:
+            message = Style.BRIGHT + Fore.YELLOW + reason + Style.RESET_ALL
+            self.newLine(message)
 
     def header(self, text):
         message = Style.BRIGHT + Fore.MAGENTA + text + Style.RESET_ALL
@@ -179,6 +189,7 @@ class CLIOutput(object):
     def config(
         self,
         extensions,
+        prefixes,
         suffixes,
         threads,
         wordlist_size,
@@ -196,10 +207,14 @@ class CLIOutput(object):
         config += separator
 
 
+        if prefixes != '':
+            config += 'Prefixes: {0}'.format(Fore.CYAN + prefixes + Fore.YELLOW)
+            config += separator
+
         if suffixes != '':
             config += 'Suffixes: {0}'.format(Fore.CYAN + suffixes + Fore.YELLOW)
             config += separator
-        
+
         config += "Threads: {0}".format(Fore.CYAN + threads + Fore.YELLOW)
         config += separator
         config += "Wordlist size: {0}".format(Fore.CYAN + wordlist_size + Fore.YELLOW)
@@ -214,7 +229,9 @@ class CLIOutput(object):
 
         self.newLine(config)
 
-    def target(self, target):
+    def setTarget(self, target):
+        self.target = target
+
         config = Style.BRIGHT + Fore.YELLOW
         config += "\nTarget: {0}\n".format(Fore.CYAN + target + Fore.YELLOW)
         config += Style.RESET_ALL
